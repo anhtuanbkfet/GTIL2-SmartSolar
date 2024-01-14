@@ -168,14 +168,13 @@ void blink_led(LED_MODE mode) {
         delay(50);  // wait for a second
         digitalWrite(LED_BUILTIN, HIGH);
         delay(50);
-        break;
       }
       break;
     case ERROR_MODE:
-      digitalWrite(LED_BUILTIN, HIGH);
-      delay(1000);  // wait for a second
       digitalWrite(LED_BUILTIN, LOW);
-      delay(1000);
+      delay(500);  // wait for a second
+      digitalWrite(LED_BUILTIN, HIGH);
+      //delay(1000);
       break;
   }
 }
@@ -199,5 +198,5 @@ void loop() {
   gtil_device.readData();
   // wait for a second
   //blink_led(NORMAL_MODE);
-  delay(600);
+  delay(800);
 }
