@@ -3,7 +3,7 @@
 #include <Arduino.h>
 #include <map>
 #include <WiFi.h>
-#include <EspMQTTClient.h>
+#include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <WiFiManager.h>
 
@@ -31,30 +31,25 @@ WiFiManager wifiManager;
 GfSun2000 gtil_device = GfSun2000();
 
 const char* mqtt_server = MQTT_BROKER_HOST;
-const char* mqtt_user = MQTT_USER;
-const char* mqtt_password = MQTT_PWD;
-
 const char* topic_root = MQTT_ROOT_TOPIC;
 const char* device_model = "SunGTIL_2000";
+
+// char mqtt_user[20];
+// char mqtt_password[20];
+const char* mqtt_user = MQTT_USER;
+const char* mqtt_password = MQTT_PWD;
 char mqtt_client_name[30];
 
-
-EspMQTTClient* mqtt_client;
+WiFiClient wifiClient;
+PubSubClient* mqtt_client;
 /*<---Variables definition*/
 
 
-// This function is called once everything is connected (Wifi and MQTT)
-// WARNING : YOU MUST IMPLEMENT IT IF YOU USE EspMQTTClient
-void onConnectionEstablished() {
-  char topic_subscribe[128];
-  sprintf(topic_subscribe, "%s/%s/control/%s", topic_root, device_model, DEVICE_ID);
-  // Subscribe to topic and display received message to Serial
-  mqtt_client->subscribe(topic_subscribe, [](const String& payload) {
-    SERIAL_LOG.println(payload);
-  });
-}
 
 void SendMqttMessage(String msg) {
+  if (!mqtt_client->connected()) {
+    mqtt_reconnect();
+  }
   mqtt_client->loop();
 
   char topic_publish[128];
@@ -88,6 +83,8 @@ void PublishCurrentMetrics(StatusLog status) {
   SendMqttMessage(jsonStr);
 }
 
+/////////////////////////////////////////////////////////////////////
+// MODBUS SETUP
 // Handle error from MODBUS client:
 void errorHandler(int errorId, char* errorMessage) {
   SERIAL_LOG.printf("Error response: %02X - %s\n", errorId, errorMessage);
@@ -126,36 +123,91 @@ void setup_modbus(){
   gtil_device.setErrorHandler(errorHandler);
 }
 
+/////////////////////////////////////////////////////////////////////
+// WIFI SETUP
+
 void setup_wifi() {
+  // Reset Wifi settings for testing  
+  //wifiManager.resetSettings();
   wifiManager.setDebugOutput(true);
   wifiManager.setConfigPortalTimeout(30);
+  wifiManager.setTimeout(120);
+
+  //WiFiManagerParameter custom_mqtt_user("username", "Username", mqtt_user, 20);
+  //WiFiManagerParameter custom_mqtt_pass("password", "Password", mqtt_password, 20);
+  //add all your parameters here
+  //wifiManager.addParameter(&custom_mqtt_user);
+  //wifiManager.addParameter(&custom_mqtt_pass);
+
   char strApName[40];
   uint32_t chipId = 0;
   for(int i=0; i<17; i=i+8) {
 	  chipId |= ((ESP.getEfuseMac() >> (40 - i)) & 0xff) << i;
 	}
   sprintf(strApName, "GTIL2_SUN_WIFI_%X", chipId);
-  wifiManager.autoConnect(strApName);
+  //wifiManager.autoConnect(strApName);
+  if (!wifiManager.autoConnect(strApName)) {
+    Serial.println("WifiManager: failed to connect and hit timeout");
+    delay(3000);
+    //reset and try again
+    ESP.restart();
+  }
+
+  //read updated parameters
+  //strcpy(mqtt_user, custom_mqtt_user.getValue());
+  //strcpy(mqtt_password, custom_mqtt_pass.getValue());
 
   SERIAL_LOG.println("Setup WifiManager completed");
   blink_led(SUCCESS_MODE);
 }
 
-void setup_mqtt_client(){
-  sprintf(mqtt_client_name, "ESP32Client_%04X", random(0xffff));
-  mqtt_client = new EspMQTTClient(
-    mqtt_server,      // MQTT Broker server ip
-    1883,             // MQTT Broker default port
-    mqtt_user,        // Can be omitted if not needed
-    mqtt_password,    // Can be omitted if not needed
-    mqtt_client_name  // Client name that uniquely identify your device
-  );
-  // Optional functionalities of EspMQTTClient
-  mqtt_client->enableDebuggingMessages();  // Enable debugging messages sent to serial output
-  mqtt_client->setMaxPacketSize(MQTT_MAX_PACKET_SIZE);
+/////////////////////////////////////////////////////////////////////
+// MQTT SETUP
 
-  SERIAL_LOG.println("Setup MQTT Client completed");
-  blink_led(SUCCESS_MODE);
+void mqtt_callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+}
+
+void mqtt_reconnect() {
+  // Loop until we're reconnected
+  while (!mqtt_client->connected()) {
+    // Attempt to connect
+    if (mqtt_client->connect(mqtt_client_name, mqtt_user, mqtt_password)) {
+      Serial.println("Mqtt connected");
+      // ... and resubscribe
+      char topic_subscribe[128];
+      sprintf(topic_subscribe, "%s/%s/control/%s", topic_root, device_model, DEVICE_ID);
+      mqtt_client->subscribe(topic_subscribe);
+    } else {
+      Serial.print("Mqtt connect failed, rc=");
+      Serial.print(mqtt_client->state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+void setup_mqtt_client(){
+  mqtt_client = new PubSubClient(wifiClient);
+  mqtt_client->setServer(mqtt_server, 1883);
+  mqtt_client->setBufferSize(MQTT_MAX_PACKET_SIZE);
+  mqtt_client->setCallback(mqtt_callback);
+
+  sprintf(mqtt_client_name, "ESP8266Client_%04X", random(0xffff));
+  mqtt_client->connect(mqtt_client_name, mqtt_user, mqtt_password);
+
+  if (mqtt_client->connected()) {
+    char strLog[128];
+    sprintf(strLog, "MQTT client connected as name: %s; username: %s", mqtt_client_name, mqtt_user);
+    SERIAL_LOG.println(strLog);
+    blink_led(SUCCESS_MODE);
+  }
 }
 
 void blink_led(LED_MODE mode) {
@@ -163,12 +215,11 @@ void blink_led(LED_MODE mode) {
     case NORMAL_MODE:
       break;
     case SUCCESS_MODE:
-      for (int i = 0; i < 2; i++) {
-        digitalWrite(LED_BUILTIN, LOW);
-        delay(50);  // wait for a second
-        digitalWrite(LED_BUILTIN, HIGH);
-        delay(50);
-      }
+      digitalWrite(LED_BUILTIN, LOW);
+      delay(100);  // wait for a second
+      digitalWrite(LED_BUILTIN, HIGH);
+      //delay(50);
+
       break;
     case ERROR_MODE:
       digitalWrite(LED_BUILTIN, LOW);
@@ -192,11 +243,14 @@ void setup() {
   setup_mqtt_client();
   // initialize digital pin LED_BUILTIN as an output.
   pinMode(LED_BUILTIN, OUTPUT);
+#ifdef ESP32C3_BOARD
+  digitalWrite(LED_BUILTIN, LOW); 
+#else
+  digitalWrite(LED_BUILTIN, HIGH); 
+#endif
 }
 
 void loop() {
   gtil_device.readData();
-  // wait for a second
-  //blink_led(NORMAL_MODE);
-  delay(800);
+  delay(900);
 }
