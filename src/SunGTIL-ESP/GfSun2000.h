@@ -26,10 +26,10 @@ struct GfSun2000Data {
     double ACVoltage;
     double DCVoltage;
     double outputPower;
+    double limmiterPower;
     double customEnergyCounter;
     double totalEnergyCounter;
     double temperature;
-    double limmiterPower;
     std::map<int16_t, int16_t> modbusRegistry;
 };
 

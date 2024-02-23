@@ -25,7 +25,6 @@ int16_t reg2ix(int16_t regNumber) {
     return (regNumber * 2) + MODBUS_INDEX_OFFSET;
 }
 
-
 void handleData(ModbusMessage response, uint32_t token) {    
     GfSun2000Data data;    
     byte num8;  

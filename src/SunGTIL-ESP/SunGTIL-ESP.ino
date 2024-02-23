@@ -6,6 +6,7 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <WiFiManager.h>
+#include "ESP32TimerInterrupt.h"
 
 #include "Configs.h"
 #include "GfSun2000.h"
@@ -25,12 +26,19 @@
 #define SERIAL_GTIL Serial2
 #endif
 
-#define TRIGGER_PIN   21  // GPIO 20 => Trigger for reset wifi manager
-#define LOW_MODE_PIN  20 
-/*---> Variables definition*/
-WiFiManager wifiManager;
+#define TRIGGER_PIN 21  // GPIO 20 => Trigger for reset wifi manager
+#define LOW_MODE_PIN 20
 
+#define TIMER0_INTERVAL_MS        1000
+
+
+/*---> Variables definition*/
+
+ESP32Timer ITimer0(0);
+WiFiManager wifiManager;
 GfSun2000 gtil_device = GfSun2000();
+WiFiClient wifiClient;
+PubSubClient* mqtt_client;
 
 const char* mqtt_server = MQTT_BROKER_HOST;
 const char* topic_root = MQTT_ROOT_TOPIC;
@@ -42,8 +50,6 @@ const char* mqtt_user = MQTT_USER;
 const char* mqtt_password = MQTT_PWD;
 char mqtt_client_name[30];
 
-WiFiClient wifiClient;
-PubSubClient* mqtt_client;
 /*<---Variables definition*/
 
 
@@ -129,6 +135,7 @@ void dataHandler(GfSun2000Data data) {
   status.dataStreams.push_back(DataStream("temperature", data.temperature));
   status.dataStreams.push_back(DataStream("energy_today", data.customEnergyCounter));
   status.dataStreams.push_back(DataStream("energy_total", data.totalEnergyCounter));
+  status.dataStreams.push_back(DataStream("total_power", data.outputPower + data.limmiterPower));
   PublishCurrentMetrics(status);
 }
 
@@ -193,12 +200,17 @@ void check_trigger_button() {
       // still holding button for 3000 ms, reset settings, code not ideaa for production
       delay(3000);  // reset delay hold
       if (digitalRead(TRIGGER_PIN) == LOW) {
+        // Stop current timer:
+        ITimer0.stopTimer();
+
         SERIAL_LOG.println("WifiManager: Button Held");
         SERIAL_LOG.println("WifiManager: Erasing Config, restarting...");
         wifiManager.resetSettings();
         ESP.restart();
         // setup again
         setup_wifi();
+
+        ITimer0.restartTimer();
       }
     }
   }
@@ -253,6 +265,13 @@ void setup_mqtt_client() {
   }
 }
 
+/////////////////////////////////////////////////////////////////////////
+// Timer:
+bool IRAM_ATTR TimerHandler0(void* timerNo) {
+  gtil_device.readData();
+  return true;
+}
+
 void blink_led(LED_MODE mode) {
   switch (mode) {
     case NORMAL_MODE:
@@ -295,12 +314,17 @@ void setup() {
   setup_wifi();
   // Setup mqtt client
   setup_mqtt_client();
-  
+  // Setup timer0:
+  // Interval in microsecs
+  if (ITimer0.attachInterruptInterval(TIMER0_INTERVAL_MS * 1000, TimerHandler0)) {
+    Serial.print(F("Starting  ITimer0 OK, millis() = "));
+    Serial.println(millis());
+  } else
+    Serial.println(F("Can't set ITimer0. Select another freq. or timer"));
 }
 
 void loop() {
   digitalWrite(LOW_MODE_PIN, LOW);
   check_trigger_button();
-  gtil_device.readData();
-  delay(1000);
+  delay(10);
 }
