@@ -6,12 +6,15 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <WiFiManager.h>
+#include <EEPROM.h>
 #include "ESP32TimerInterrupt.h"
+
 
 #include "Configs.h"
 #include "GfSun2000.h"
 #include "MessageModels.h"
 
+#define EEPROM_SIZE 32
 
 #define MQTT_MAX_PACKET_SIZE 2048
 #define DEVICE_ID "2307060514"
@@ -29,7 +32,7 @@
 #define TRIGGER_PIN 21  // GPIO 20 => Trigger for reset wifi manager
 #define LOW_MODE_PIN 20
 
-#define TIMER0_INTERVAL_MS        1000
+#define TIMER0_INTERVAL_MS 1000
 
 
 /*---> Variables definition*/
@@ -44,40 +47,32 @@ const char* mqtt_server = MQTT_BROKER_HOST;
 const char* topic_root = MQTT_ROOT_TOPIC;
 const char* device_model = "SunGTIL_2000";
 
-// char mqtt_user[20];
-// char mqtt_password[20];
 const char* mqtt_user = MQTT_USER;
 const char* mqtt_password = MQTT_PWD;
 char mqtt_client_name[30];
+String strDeviceId = "Unknown";
 
+extern GfSun2000_Work_Mode gtilWorkMode;
 /*<---Variables definition*/
 
 
-void SendMqttErrorLog(String deviceId, String msg) {
+void SendMqttMessage(String deviceId, String msgType, String msgData) {
   if (!mqtt_client->connected()) {
     mqtt_reconnect();
   }
   mqtt_client->loop();
-
   char topic_publish[128];
-  sprintf(topic_publish, "%s/%s/debug/%s", topic_root, device_model, deviceId);
-  mqtt_client->publish(topic_publish, msg.c_str());
+  sprintf(topic_publish, "%s/%s/%s/%s", topic_root, device_model, msgType, deviceId);
+  mqtt_client->publish(topic_publish, msgData.c_str());
 }
 
-void SendMqttMetrics(String deviceId, String msg) {
-  if (!mqtt_client->connected()) {
-    mqtt_reconnect();
-  }
-  mqtt_client->loop();
-
-  char topic_publish[128];
-  sprintf(topic_publish, "%s/%s/log/%s", topic_root, device_model, deviceId);
-  // SERIAL_LOG.println("Publish a message to topic:");
-  // SERIAL_LOG.println(topic_publish);
-  // SERIAL_LOG.println("Message data:");
-  // SERIAL_LOG.println(msg);
-  mqtt_client->publish(topic_publish, msg.c_str());
+void SendMqttDeviceMetrics(String deviceId, String msg) {
+  SendMqttMessage(deviceId, "log", msg);
   blink_led(SUCCESS_MODE);
+}
+
+void SendMqttDeviceLog(String deviceId, String msg) {
+  SendMqttMessage(deviceId, "debug", msg);
 }
 
 void PublishCurrentMetrics(StatusLog status) {
@@ -93,38 +88,48 @@ void PublishCurrentMetrics(StatusLog status) {
     obj["value"] = item.value;
   }
   jLog["dataStreams"] = jStreams;
-  // serializeJson(jLog, Serial);
-  // SERIAL_LOG.println("");
 
   String jsonStr;
   serializeJson(jLog, jsonStr);
-  SendMqttMetrics(status.deviceGuid, jsonStr);
+  SendMqttDeviceMetrics(status.deviceGuid, jsonStr);
+}
+
+void PublishRegistersDataLog(GfSun2000Data data) {
+  DynamicJsonDocument jLog(2048);
+  jLog["command"] = "CMD_PRINT_DEBUG_LOG";
+  jLog["deviceGuid"] = data.deviceID;
+  jLog["gtilWorkMode"] = gtilWorkMode;
+
+  DynamicJsonDocument jStreams(2048);
+  std::map<int16_t, int16_t>::iterator itr;
+  for (itr = data.modbusRegistry.begin(); itr != data.modbusRegistry.end(); ++itr) {
+    JsonObject obj = jStreams.createNestedObject();
+    obj["registry"] = itr->first;
+    obj["value"] = itr->second;
+  }
+  jLog["registryValues"] = jStreams;
+
+  String jsonStr;
+  serializeJson(jLog, jsonStr);
+  SendMqttDeviceLog(data.deviceID, jsonStr);
 }
 
 /////////////////////////////////////////////////////////////////////
 // MODBUS SETUP
 // Handle error from MODBUS client:
 void errorHandler(int errorId, char* errorMessage) {
-  char devId[11];
   char strLog[128];
-  uint32_t chipId = 0;
-  for (int i = 0; i < 17; i = i + 8) {
-    chipId |= ((ESP.getEfuseMac() >> (40 - i)) & 0xff) << i;
-  }
-  sprintf(devId, "%X", chipId);
   sprintf(strLog, "Error response: %02X - %s\n", errorId, errorMessage);
   SERIAL_LOG.printf(strLog);
-  SendMqttErrorLog(devId, strLog);
+  SendMqttDeviceLog(strDeviceId, strLog);
   blink_led(ERROR_MODE);
 }
 
 // Handle error from MODBUS client:
+int g_secoundCounter = 0;
 void dataHandler(GfSun2000Data data) {
-  std::map<int16_t, int16_t>::iterator itr;
-  for (itr = data.modbusRegistry.begin(); itr != data.modbusRegistry.end(); ++itr) {
-    SERIAL_LOG.printf("Registry %d: %d \n", itr->first, itr->second);
-  }
 
+  strDeviceId = String(data.deviceID);
   StatusLog status;
   status.command = CMD_UPDATE_LOG;
   status.deviceGuid = data.deviceID;
@@ -137,6 +142,12 @@ void dataHandler(GfSun2000Data data) {
   status.dataStreams.push_back(DataStream("energy_total", data.totalEnergyCounter));
   status.dataStreams.push_back(DataStream("total_power", data.outputPower + data.limmiterPower));
   PublishCurrentMetrics(status);
+
+  if (g_secoundCounter % 30 == 0) {
+    PublishRegistersDataLog(data);
+    g_secoundCounter = 0;
+  }
+  g_secoundCounter++;
 }
 
 void setup_modbus() {
@@ -155,6 +166,32 @@ void setup_modbus() {
 
 /////////////////////////////////////////////////////////////////////
 // WIFI SETUP
+void eeprom_read(GfSun2000_Work_Mode &data)
+{
+  EEPROM.begin(512);
+  EEPROM.get(0, data);
+  EEPROM.end();
+}
+
+
+void eeprom_saveconfig(GfSun2000_Work_Mode data)
+{
+  EEPROM.begin(512);
+  EEPROM.put(0, data);
+  EEPROM.commit();
+  EEPROM.end();
+}
+
+String getEspChipsetId() {
+  char devId[11];
+  char strLog[128];
+  uint32_t chipId = 0;
+  for (int i = 0; i < 17; i = i + 8) {
+    chipId |= ((ESP.getEfuseMac() >> (40 - i)) & 0xff) << i;
+  }
+  sprintf(devId, "%X", chipId);
+  return String(devId);
+}
 
 void setup_wifi() {
   digitalWrite(LED_BUILTIN, LOW);
@@ -164,7 +201,6 @@ void setup_wifi() {
   wifiManager.setConfigPortalTimeout(30);
   wifiManager.setTimeout(120);
 
-
   //WiFiManagerParameter custom_mqtt_user("username", "Username", mqtt_user, 20);
   //WiFiManagerParameter custom_mqtt_pass("password", "Password", mqtt_password, 20);
   //add all your parameters here
@@ -172,11 +208,9 @@ void setup_wifi() {
   //wifiManager.addParameter(&custom_mqtt_pass);
 
   char strApName[40];
-  uint32_t chipId = 0;
-  for (int i = 0; i < 17; i = i + 8) {
-    chipId |= ((ESP.getEfuseMac() >> (40 - i)) & 0xff) << i;
-  }
-  sprintf(strApName, "GTIL2_SUN_WIFI_%X", chipId);
+  strDeviceId = getEspChipsetId();
+
+  sprintf(strApName, "GTIL2_SUN_WIFI_%X", strDeviceId);
   //wifiManager.autoConnect(strApName);
   if (!wifiManager.autoConnect(strApName)) {
     SERIAL_LOG.println("WifiManager: failed to connect and hit timeout");
@@ -187,6 +221,7 @@ void setup_wifi() {
   //read updated parameters
   //strcpy(mqtt_user, custom_mqtt_user.getValue());
   //strcpy(mqtt_password, custom_mqtt_pass.getValue());
+  
   SERIAL_LOG.println("WifiManager: Setup WifiManager completed");
 }
 
@@ -303,6 +338,8 @@ void setup() {
 #else
   digitalWrite(LED_BUILTIN, HIGH);
 #endif
+  // read configured data from eeprom:
+  //eeprom_read(gtilWorkMode);
 
   WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
   SERIAL_LOG.begin(9600);
@@ -317,10 +354,10 @@ void setup() {
   // Setup timer0:
   // Interval in microsecs
   if (ITimer0.attachInterruptInterval(TIMER0_INTERVAL_MS * 1000, TimerHandler0)) {
-    Serial.print(F("Starting  ITimer0 OK, millis() = "));
-    Serial.println(millis());
+    SERIAL_LOG.print(F("Starting  ITimer0 OK, millis() = "));
+    SERIAL_LOG.println(millis());
   } else
-    Serial.println(F("Can't set ITimer0. Select another freq. or timer"));
+    SERIAL_LOG.println(F("Can't set ITimer0. Select another freq. or timer"));
 }
 
 void loop() {
