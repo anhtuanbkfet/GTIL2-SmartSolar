@@ -17,7 +17,6 @@
 #define EEPROM_SIZE 32
 
 #define MQTT_MAX_PACKET_SIZE 2048
-#define DEVICE_ID "2307060514"
 
 #define SERIAL_LOG Serial
 #ifdef ESP32C3_BOARD
@@ -52,13 +51,14 @@ const char* mqtt_password = MQTT_PWD;
 char mqtt_client_name[30];
 String strDeviceId = "Unknown";
 
+
 extern GfSun2000_Work_Mode gtilWorkMode;
 /*<---Variables definition*/
 
 
 void SendMqttMessage(String deviceId, String msgType, String msgData) {
   if (!mqtt_client->connected()) {
-    mqtt_reconnect();
+    mqtt_connect_to_server();
   }
   mqtt_client->loop();
   char topic_publish[128];
@@ -77,7 +77,7 @@ void SendMqttDeviceLog(String deviceId, String msg) {
 
 void PublishCurrentMetrics(StatusLog status) {
   DynamicJsonDocument jLog(2048);
-  jLog["command"] = CMD_UPDATE_LOG;
+  jLog["command"] = CMD_UPDATE_METRICS;
   jLog["deviceGuid"] = status.deviceGuid;
 
   DynamicJsonDocument jStreams(2048);
@@ -96,7 +96,7 @@ void PublishCurrentMetrics(StatusLog status) {
 
 void PublishRegistersDataLog(GfSun2000Data data) {
   DynamicJsonDocument jLog(2048);
-  jLog["command"] = "CMD_PRINT_DEBUG_LOG";
+  jLog["command"] = CMD_PRINT_DEBUG_LOG;
   jLog["deviceGuid"] = data.deviceID;
   jLog["gtilWorkMode"] = gtilWorkMode;
 
@@ -131,7 +131,7 @@ void dataHandler(GfSun2000Data data) {
 
   strDeviceId = String(data.deviceID);
   StatusLog status;
-  status.command = CMD_UPDATE_LOG;
+  status.command = CMD_UPDATE_METRICS;
   status.deviceGuid = data.deviceID;
   status.dataStreams.push_back(DataStream("dc_voltage", data.DCVoltage));
   status.dataStreams.push_back(DataStream("ac_voltage", data.ACVoltage));
@@ -263,21 +263,37 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-void mqtt_reconnect() {
-  // Loop until we're reconnected
+void mqtt_connect_to_server() {
+  // Attempt to connect
+  char topic_status[128];
+  sprintf(topic_status, "%s/%s/%s/%s", topic_root, device_model, "status", strDeviceId);
+  sprintf(mqtt_client_name, "ESP8266Client_%04X", random(0xffff));
+
+
+  DynamicJsonDocument lastMessage(256);
+  lastMessage["command"] = CMD_UPDATE_STATUS;
+  lastMessage["deviceGuid"] = strDeviceId;
+  lastMessage["message"] = "disconnected";
+
+  String strLastMessage;
+  serializeJson(lastMessage, strLastMessage);
+
   while (!mqtt_client->connected()) {
-    // Attempt to connect
-    if (mqtt_client->connect(mqtt_client_name, mqtt_user, mqtt_password)) {
+    if (mqtt_client->connect(mqtt_client_name, mqtt_user, mqtt_password,
+                             topic_status, 0, true, strLastMessage.c_str())) {
       SERIAL_LOG.println("Mqtt connected");
+      //Send a message to notice that i'm online
+      lastMessage["message"] = "connected";
+      serializeJson(lastMessage, strLastMessage);
+      mqtt_client->publish(topic_status, strLastMessage.c_str());
       // ... and resubscribe
       char topic_subscribe[128];
-      sprintf(topic_subscribe, "%s/%s/control/%s", topic_root, device_model, DEVICE_ID);
+      sprintf(topic_subscribe, "%s/%s/control/%s", topic_root, device_model, strDeviceId);
       mqtt_client->subscribe(topic_subscribe);
     } else {
       SERIAL_LOG.print("Mqtt connect failed, rc=");
       SERIAL_LOG.print(mqtt_client->state());
       SERIAL_LOG.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
       delay(5000);
     }
   }
@@ -288,16 +304,7 @@ void setup_mqtt_client() {
   mqtt_client->setServer(mqtt_server, 1883);
   mqtt_client->setBufferSize(MQTT_MAX_PACKET_SIZE);
   mqtt_client->setCallback(mqtt_callback);
-
-  sprintf(mqtt_client_name, "ESP8266Client_%04X", random(0xffff));
-  mqtt_client->connect(mqtt_client_name, mqtt_user, mqtt_password);
-
-  if (mqtt_client->connected()) {
-    char strLog[128];
-    sprintf(strLog, "MQTT client connected as name: %s; username: %s", mqtt_client_name, mqtt_user);
-    SERIAL_LOG.println(strLog);
-    blink_led(SUCCESS_MODE);
-  }
+  //mqtt_connect_to_server();
 }
 
 /////////////////////////////////////////////////////////////////////////
@@ -307,16 +314,19 @@ bool IRAM_ATTR TimerHandler0(void* timerNo) {
   return true;
 }
 
+int secondCounter = 0;
 void blink_led(LED_MODE mode) {
   switch (mode) {
     case NORMAL_MODE:
       break;
     case SUCCESS_MODE:
-      digitalWrite(LED_BUILTIN, LOW);
-      delay(50);  // wait for a second
-      digitalWrite(LED_BUILTIN, HIGH);
-      //delay(50);
-
+      secondCounter++;
+      if (secondCounter == 2) {
+        secondCounter = 0;
+        digitalWrite(LED_BUILTIN, LOW);
+        delay(50);  // wait for a second
+        digitalWrite(LED_BUILTIN, HIGH);
+      }
       break;
     case ERROR_MODE:
       digitalWrite(LED_BUILTIN, LOW);
