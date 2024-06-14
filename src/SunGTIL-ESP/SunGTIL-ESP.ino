@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <map>
 #include <WiFi.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
 #include <WiFiManager.h>
@@ -14,7 +16,8 @@
 #include "GfSun2000.h"
 #include "MessageModels.h"
 
-#define EEPROM_SIZE 32
+#define EEPROM_ADDRESS 0
+#define EEPROM_SIZE 8  // int64 size
 
 #define MQTT_MAX_PACKET_SIZE 2048
 
@@ -53,8 +56,33 @@ String strDeviceId = "Unknown";
 
 
 extern GfSun2000_Work_Mode gtilWorkMode;
+
+// For count today grid consume
+double g_todayGridCounter = 0;
+
+// Define NTP Client to get time
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+
 /*<---Variables definition*/
 
+void CheckInternetTimeTrigger() {
+  //Get internet time:
+  while (!timeClient.update()) {
+    timeClient.forceUpdate();
+  }
+  //Send log to debug:
+  char strLog[128];
+  sprintf(strLog, "CheckInternetTimeTrigger: %s", timeClient.getFormattedTime().c_str());
+  SERIAL_LOG.printf(strLog);
+  SendMqttDeviceLog(strDeviceId, strLog);
+
+  if (timeClient.getHours() == 0 && timeClient.getMinutes() == 0) {
+    //Reset counter everyday:
+    g_todayGridCounter = 0;
+    eeprom_save_data();
+  }
+}
 
 void SendMqttMessage(String deviceId, String msgType, String msgData) {
   if (!mqtt_client->connected()) {
@@ -129,6 +157,10 @@ void errorHandler(int errorId, char* errorMessage) {
 int g_secoundCounter = 0;
 void dataHandler(GfSun2000Data data) {
 
+  //Process today grid consume:
+  g_todayGridCounter += (data.limmiterPower / 3600000);
+  eeprom_save_data();
+
   strDeviceId = String(data.deviceID);
   StatusLog status;
   status.command = CMD_UPDATE_METRICS;
@@ -141,10 +173,13 @@ void dataHandler(GfSun2000Data data) {
   status.dataStreams.push_back(DataStream("energy_today", data.customEnergyCounter));
   status.dataStreams.push_back(DataStream("energy_total", data.totalEnergyCounter));
   status.dataStreams.push_back(DataStream("total_power", data.outputPower + data.limmiterPower));
+  status.dataStreams.push_back(DataStream("limmiter_today", g_todayGridCounter));
+
   PublishCurrentMetrics(status);
 
-  if (g_secoundCounter % 30 == 0) {
+  if (g_secoundCounter % 60 == 0) {
     PublishRegistersDataLog(data);
+    CheckInternetTimeTrigger();
     g_secoundCounter = 0;
   }
   g_secoundCounter++;
@@ -166,20 +201,25 @@ void setup_modbus() {
 
 /////////////////////////////////////////////////////////////////////
 // WIFI SETUP
-void eeprom_read(GfSun2000_Work_Mode &data)
-{
-  EEPROM.begin(512);
-  EEPROM.get(0, data);
+void eeprom_init() {
+  // initialize EEPROM with predefined size
+  if (!EEPROM.begin(EEPROM_SIZE)) {
+    Serial.println("failed to initialize EEPROM");
+  }
+}
+
+void eeprom_read_data() {
+  g_todayGridCounter = EEPROM.read(EEPROM_ADDRESS);
+  if (g_todayGridCounter > 20) {
+    g_todayGridCounter = 0;
+  }
   EEPROM.end();
 }
 
 
-void eeprom_saveconfig(GfSun2000_Work_Mode data)
-{
-  EEPROM.begin(512);
-  EEPROM.put(0, data);
+void eeprom_save_data() {
+  EEPROM.write(EEPROM_ADDRESS, g_todayGridCounter);
   EEPROM.commit();
-  EEPROM.end();
 }
 
 String getEspChipsetId() {
@@ -221,7 +261,7 @@ void setup_wifi() {
   //read updated parameters
   //strcpy(mqtt_user, custom_mqtt_user.getValue());
   //strcpy(mqtt_password, custom_mqtt_pass.getValue());
-  
+
   SERIAL_LOG.println("WifiManager: Setup WifiManager completed");
 }
 
@@ -348,8 +388,11 @@ void setup() {
 #else
   digitalWrite(LED_BUILTIN, HIGH);
 #endif
+
+  //EEPROM:
+  eeprom_init();
   // read configured data from eeprom:
-  //eeprom_read(gtilWorkMode);
+  eeprom_read_data();
 
   WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
   SERIAL_LOG.begin(9600);
@@ -368,6 +411,10 @@ void setup() {
     SERIAL_LOG.println(millis());
   } else
     SERIAL_LOG.println(F("Can't set ITimer0. Select another freq. or timer"));
+
+  //Start NTP client:
+  timeClient.begin();
+  timeClient.setTimeOffset(25200);  //Set time offset for GMT+7
 }
 
 void loop() {
