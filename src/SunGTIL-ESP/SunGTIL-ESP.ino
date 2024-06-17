@@ -49,6 +49,20 @@ const char* device_model = "SunGTIL_2000";
 const char* mqtt_user = MQTT_USER;
 const char* mqtt_password = MQTT_PWD;
 char mqtt_client_name[30];
+<<<<<<< Updated upstream
+=======
+String strDeviceId = "Unknown";
+
+
+extern GfSun2000_Work_Mode gtilWorkMode;
+
+// For count today grid consume
+double g_todayGridCounter = 0.15;
+
+// Define NTP Client to get time
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+>>>>>>> Stashed changes
 
 /*<---Variables definition*/
 
