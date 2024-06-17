@@ -17,7 +17,7 @@
 #include "MessageModels.h"
 
 #define EEPROM_ADDRESS 0
-#define EEPROM_SIZE 8  // int64 size
+#define EEPROM_SIZE sizeof(double)  // int64 size
 
 #define MQTT_MAX_PACKET_SIZE 2048
 
@@ -58,7 +58,7 @@ String strDeviceId = "Unknown";
 extern GfSun2000_Work_Mode gtilWorkMode;
 
 // For count today grid consume
-double g_todayGridCounter = 0;
+double g_todayGridCounter = 0.3;
 
 // Define NTP Client to get time
 WiFiUDP ntpUDP;
@@ -66,6 +66,7 @@ NTPClient timeClient(ntpUDP);
 
 /*<---Variables definition*/
 
+int nMinuteCount = 0;
 void CheckInternetTimeTrigger() {
   //Get internet time:
   while (!timeClient.update()) {
@@ -78,8 +79,12 @@ void CheckInternetTimeTrigger() {
   SendMqttDeviceLog(strDeviceId, strLog);
 
   if (timeClient.getHours() == 0 && timeClient.getMinutes() == 0) {
-    //Reset counter everyday:
-    g_todayGridCounter = 0;
+    g_todayGridCounter = 0;  //Reset counter everyday
+  }
+  // Save to EEPROM every 15min
+  nMinuteCount++;
+  if (nMinuteCount >= 15) {
+    nMinuteCount = 0;
     eeprom_save_data();
   }
 }
@@ -159,7 +164,6 @@ void dataHandler(GfSun2000Data data) {
 
   //Process today grid consume:
   g_todayGridCounter += (data.limmiterPower / 3600000);
-  eeprom_save_data();
 
   strDeviceId = String(data.deviceID);
   StatusLog status;
@@ -204,22 +208,27 @@ void setup_modbus() {
 void eeprom_init() {
   // initialize EEPROM with predefined size
   if (!EEPROM.begin(EEPROM_SIZE)) {
-    Serial.println("failed to initialize EEPROM");
+    SERIAL_LOG.println("failed to initialize EEPROM");
   }
 }
 
+char strLog[64];
 void eeprom_read_data() {
-  g_todayGridCounter = EEPROM.read(EEPROM_ADDRESS);
-  if (g_todayGridCounter > 20) {
+  EEPROM.get(EEPROM_ADDRESS, g_todayGridCounter);
+  sprintf(strLog, "EEPROM read: %f", g_todayGridCounter);
+  SERIAL_LOG.println(strLog);
+
+  if (g_todayGridCounter > 50) {
     g_todayGridCounter = 0;
   }
-  EEPROM.end();
 }
 
 
 void eeprom_save_data() {
-  EEPROM.write(EEPROM_ADDRESS, g_todayGridCounter);
+  EEPROM.put(EEPROM_ADDRESS, g_todayGridCounter);
   EEPROM.commit();
+  sprintf(strLog, "EEPROM save: %f", g_todayGridCounter);
+  SERIAL_LOG.println(strLog);
 }
 
 String getEspChipsetId() {
@@ -391,8 +400,6 @@ void setup() {
 
   //EEPROM:
   eeprom_init();
-  // read configured data from eeprom:
-  eeprom_read_data();
 
   WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
   SERIAL_LOG.begin(9600);
@@ -411,6 +418,9 @@ void setup() {
     SERIAL_LOG.println(millis());
   } else
     SERIAL_LOG.println(F("Can't set ITimer0. Select another freq. or timer"));
+
+  // read configured data from eeprom:
+  eeprom_read_data();
 
   //Start NTP client:
   timeClient.begin();
