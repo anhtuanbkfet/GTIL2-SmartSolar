@@ -52,30 +52,19 @@ const char* device_model = "SunGTIL_2000";
 const char* mqtt_user = MQTT_USER;
 const char* mqtt_password = MQTT_PWD;
 char mqtt_client_name[30];
-<<<<<<< HEAD
-<<<<<<< Updated upstream
-=======
-=======
->>>>>>> c0a3a4d2473273f9633cfc110ca0650f0dbdbae1
+
 String strDeviceId = "Unknown";
 
 
 extern GfSun2000_Work_Mode gtilWorkMode;
 
 // For count today grid consume
-<<<<<<< HEAD
+int nDayInMonth = 0;
 double g_todayGridCounter = 0.15;
-=======
-double g_todayGridCounter = 0.3;
->>>>>>> c0a3a4d2473273f9633cfc110ca0650f0dbdbae1
 
 // Define NTP Client to get time
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
-<<<<<<< HEAD
->>>>>>> Stashed changes
-=======
->>>>>>> c0a3a4d2473273f9633cfc110ca0650f0dbdbae1
 
 /*<---Variables definition*/
 
@@ -91,7 +80,8 @@ void CheckInternetTimeTrigger() {
   SERIAL_LOG.printf(strLog);
   SendMqttDeviceLog(strDeviceId, strLog);
 
-  if (timeClient.getHours() == 0 && timeClient.getMinutes() == 0) {
+  if (timeClient.getDay() != nDayInMonth) {
+    nDayInMonth = timeClient.getDay();
     g_todayGridCounter = 0;  //Reset counter everyday
   }
   // Save to EEPROM every 15min
