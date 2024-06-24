@@ -250,8 +250,14 @@ void setup_wifi() {
   // Reset Wifi settings for testing
   //wifiManager.resetSettings();
   wifiManager.setDebugOutput(true);
-  wifiManager.setConfigPortalTimeout(30);
-  wifiManager.setTimeout(120);
+  //wifiManager.setConfigPortalTimeout(180);
+  wifiManager.setConnectTimeout(30);    //
+  wifiManager.setConnectRetries(120);   // Set persistently reconnect to known SSID for 60 min
+
+  if (wifiManager.getWiFiIsSaved()) {
+    wifiManager.setEnableConfigPortal(false); //And if reconnect failed, do not start the config portal from autoConnect if connection failed
+                                              // Instead of, ESP will be restarted.
+  }
 
   //WiFiManagerParameter custom_mqtt_user("username", "Username", mqtt_user, 20);
   //WiFiManagerParameter custom_mqtt_pass("password", "Password", mqtt_password, 20);
@@ -263,10 +269,8 @@ void setup_wifi() {
   strDeviceId = getEspChipsetId();
 
   sprintf(strApName, "GTIL2_SUN_WIFI_%X", strDeviceId);
-  //wifiManager.autoConnect(strApName);
   if (!wifiManager.autoConnect(strApName)) {
     SERIAL_LOG.println("WifiManager: failed to connect and hit timeout");
-    delay(5000);
     //reset and try again
     ESP.restart();
   }
