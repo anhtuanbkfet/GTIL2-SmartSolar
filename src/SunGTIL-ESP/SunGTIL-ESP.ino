@@ -9,7 +9,7 @@
 #include <ArduinoJson.h>
 #include <WiFiManager.h>
 #include <EEPROM.h>
-#include "ESP32TimerInterrupt.h"
+#include <ESP32TimerInterrupt.h>
 
 
 #include "Configs.h"
@@ -36,8 +36,12 @@
 
 #define TIMER0_INTERVAL_MS 1000
 
+#define FIRMWARE_VERSION "1.0.240625"
+
 
 /*---> Variables definition*/
+bool wm_nonblocking = false;  // change to true to use non blocking
+bool wm_wifi_connected = false;
 
 ESP32Timer ITimer0(0);
 WiFiManager wifiManager;
@@ -115,6 +119,8 @@ void PublishCurrentMetrics(StatusLog status) {
   DynamicJsonDocument jLog(2048);
   jLog["command"] = CMD_UPDATE_METRICS;
   jLog["deviceGuid"] = status.deviceGuid;
+  jLog["firmwareVersion"] = status.firmwareVersion;
+  jLog["signalQuality"] = status.signalQuality;
 
   DynamicJsonDocument jStreams(2048);
 
@@ -128,6 +134,7 @@ void PublishCurrentMetrics(StatusLog status) {
   String jsonStr;
   serializeJson(jLog, jsonStr);
   SendMqttDeviceMetrics(status.deviceGuid, jsonStr);
+  SERIAL_LOG.printf(jsonStr.c_str());
 }
 
 void PublishRegistersDataLog(GfSun2000Data data) {
@@ -172,6 +179,8 @@ void dataHandler(GfSun2000Data data) {
   StatusLog status;
   status.command = CMD_UPDATE_METRICS;
   status.deviceGuid = data.deviceID;
+  status.firmwareVersion = FIRMWARE_VERSION;
+  status.signalQuality = get_signal_quality();
   status.dataStreams.push_back(DataStream("dc_voltage", data.DCVoltage));
   status.dataStreams.push_back(DataStream("ac_voltage", data.ACVoltage));
   status.dataStreams.push_back(DataStream("output_power", data.outputPower));
@@ -207,7 +216,7 @@ void setup_modbus() {
 }
 
 /////////////////////////////////////////////////////////////////////
-// WIFI SETUP
+// EEPROM SETUP
 void eeprom_init() {
   // initialize EEPROM with predefined size
   if (!EEPROM.begin(EEPROM_SIZE)) {
@@ -226,13 +235,15 @@ void eeprom_read_data() {
   }
 }
 
-
 void eeprom_save_data() {
   EEPROM.put(EEPROM_ADDRESS, g_todayGridCounter);
   EEPROM.commit();
   sprintf(strLog, "EEPROM save: %f", g_todayGridCounter);
   SERIAL_LOG.println(strLog);
 }
+
+/////////////////////////////////////////////////////////////////////
+// WIFI SETUP
 
 String getEspChipsetId() {
   char devId[11];
@@ -245,44 +256,58 @@ String getEspChipsetId() {
   return String(devId);
 }
 
+//On save config callback:
+void saveConfigCallback() {
+  Serial.println("saveConfigCallback ----> Connected to wifi AP");
+  //wifiManager.setEnableConfigPortal(false);
+  //SERIAL_LOG.println("wifiManager ----> setEnableConfigPortal(false)");
+  wm_wifi_connected = true;
+}
+
 void setup_wifi() {
-  digitalWrite(LED_BUILTIN, LOW);
+  //digitalWrite(LED_BUILTIN, LOW);
+  WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
   // Reset Wifi settings for testing
   //wifiManager.resetSettings();
   wifiManager.setDebugOutput(true);
-  //wifiManager.setConfigPortalTimeout(180);
-  wifiManager.setConnectTimeout(30);    //
-  wifiManager.setConnectRetries(120);   // Set persistently reconnect to known SSID for 60 min
+  wifiManager.setSaveConfigCallback(saveConfigCallback);
+  wifiManager.setConfigPortalTimeout(180);  // Do not work with non-blocking mode.
+  wifiManager.setConnectTimeout(10);        //
+  wifiManager.setConnectRetries(3);         // Set persistently reconnect to known SSID for 30s
 
-  if (wifiManager.getWiFiIsSaved()) {
-    wifiManager.setEnableConfigPortal(false); //And if reconnect failed, do not start the config portal from autoConnect if connection failed
-                                              // Instead of, ESP will be restarted.
+  if (wm_nonblocking) {
+    wifiManager.setConfigPortalBlocking(false);
   }
 
-  //WiFiManagerParameter custom_mqtt_user("username", "Username", mqtt_user, 20);
-  //WiFiManagerParameter custom_mqtt_pass("password", "Password", mqtt_password, 20);
-  //add all your parameters here
-  //wifiManager.addParameter(&custom_mqtt_user);
-  //wifiManager.addParameter(&custom_mqtt_pass);
+  //if (!wifiManager.getWiFiIsSaved()) {
+  //wifiManager.setEnableConfigPortal(false);
+  //SERIAL_LOG.println("wifiManager ----> setEnableConfigPortal(false)");
+  //}
 
   char strApName[40];
   strDeviceId = getEspChipsetId();
 
   sprintf(strApName, "GTIL2_SUN_WIFI_%X", strDeviceId);
-  if (!wifiManager.autoConnect(strApName)) {
+  wm_wifi_connected = wifiManager.autoConnect(strApName);
+
+  if (!wm_wifi_connected) {
     SERIAL_LOG.println("WifiManager: failed to connect and hit timeout");
+    delay(1000);
     //reset and try again
     ESP.restart();
   }
-  //read updated parameters
-  //strcpy(mqtt_user, custom_mqtt_user.getValue());
-  //strcpy(mqtt_password, custom_mqtt_pass.getValue());
-
-  SERIAL_LOG.println("WifiManager: Setup WifiManager completed");
 }
 
+int get_signal_quality() {
+  int rssi = WiFi.RSSI();
+  return wifiManager.getRSSIasQuality(rssi);
+}
+
+/////////////////////////////////////////////////////////////////////
+// INTERRUPT SETUP
 
 void check_trigger_button() {
+  // check for button press
   if (digitalRead(TRIGGER_PIN) == LOW) {
     // poor mans debounce/press-hold, code not ideal for production
     delay(50);
@@ -298,9 +323,6 @@ void check_trigger_button() {
         SERIAL_LOG.println("WifiManager: Erasing Config, restarting...");
         wifiManager.resetSettings();
         ESP.restart();
-        // setup again
-        setup_wifi();
-
         ITimer0.restartTimer();
       }
     }
@@ -366,7 +388,9 @@ void setup_mqtt_client() {
 /////////////////////////////////////////////////////////////////////////
 // Timer:
 bool IRAM_ATTR TimerHandler0(void* timerNo) {
-  gtil_device.readData();
+  if (wm_wifi_connected) {
+    gtil_device.readData();
+  }
   return true;
 }
 
@@ -390,6 +414,22 @@ void blink_led(LED_MODE mode) {
       digitalWrite(LED_BUILTIN, HIGH);
       delay(1000);
       break;
+    case CONFIG_MODE:
+      digitalWrite(LED_BUILTIN, LOW);
+      break;
+    case UNCONFIG_MODE:
+      secondCounter++;
+      if (secondCounter == 2) {
+        secondCounter = 0;
+        digitalWrite(LED_BUILTIN, LOW);
+        delay(100);  // wait for a second
+        digitalWrite(LED_BUILTIN, HIGH);
+        delay(100);
+        digitalWrite(LED_BUILTIN, LOW);
+        delay(100);  // wait for a second
+        digitalWrite(LED_BUILTIN, HIGH);
+        delay(1000);
+      }
   }
 }
 
@@ -398,6 +438,7 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(LOW_MODE_PIN, OUTPUT);
   pinMode(TRIGGER_PIN, INPUT_PULLUP);
+  //attachInterrupt(TRIGGER_PIN, check_trigger_button, RISING);
 
 #ifdef ESP32C3_BOARD
   digitalWrite(LED_BUILTIN, LOW);
@@ -408,7 +449,6 @@ void setup() {
   //EEPROM:
   eeprom_init();
 
-  WiFi.mode(WIFI_STA);  // explicitly set mode, esp defaults to STA+AP
   SERIAL_LOG.begin(9600);
   //Print a message for debug
   SERIAL_LOG.println("SUN GRID-TIE INVERTER 1000/2000");
@@ -435,7 +475,15 @@ void setup() {
 }
 
 void loop() {
+  if (wm_nonblocking) {
+    wifiManager.process();
+  }
   digitalWrite(LOW_MODE_PIN, LOW);
   check_trigger_button();
-  delay(10);
+  // delay(10);
+  if (wifiManager.getConfigPortalActive()) {
+    blink_led(CONFIG_MODE);
+  } else if (WiFi.status() != WL_CONNECTED) {
+    blink_led(UNCONFIG_MODE);
+  }
 }
