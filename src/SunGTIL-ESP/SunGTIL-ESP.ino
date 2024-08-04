@@ -36,7 +36,7 @@
 
 #define TIMER0_INTERVAL_MS 1000
 
-#define FIRMWARE_VERSION "1.0.240625"
+#define FIRMWARE_VERSION "1.0.240804"
 
 
 /*---> Variables definition*/
@@ -119,7 +119,7 @@ void PublishCurrentMetrics(StatusLog status) {
   DynamicJsonDocument jLog(2048);
   jLog["command"] = CMD_UPDATE_METRICS;
   jLog["deviceGuid"] = status.deviceGuid;
-  jLog["espId"]  = status.espId;
+  jLog["espId"] = status.espId;
   jLog["firmwareVersion"] = status.firmwareVersion;
   jLog["signalQuality"] = status.signalQuality;
 
@@ -142,7 +142,9 @@ void PublishRegistersDataLog(GfSun2000Data data) {
   DynamicJsonDocument jLog(2048);
   jLog["command"] = CMD_PRINT_DEBUG_LOG;
   jLog["deviceGuid"] = data.deviceID;
-  jLog["gtilWorkMode"] = gtilWorkMode;
+  jLog["espId"] = strDeviceId;
+  jLog["firmwareVersion"] = FIRMWARE_VERSION;
+  jLog["gtilWorkMode"] = gtilWorkMode == DETAIL_MODE ? "DETAIL_MODE" : "BASIC_MODE";
 
   DynamicJsonDocument jStreams(2048);
   std::map<int16_t, int16_t>::iterator itr;
@@ -355,8 +357,7 @@ void mqtt_connect_to_server() {
       char topic_subscribe[128];
       sprintf(topic_subscribe, "%s/%s/control/%s", topic_root, device_model, strDeviceId);
       mqtt_client->subscribe(topic_subscribe);
-    } 
-    else {
+    } else {
       SERIAL_LOG.print("Mqtt connect failed, rc=");
       SERIAL_LOG.print(mqtt_client->state());
       SERIAL_LOG.println(" try again in 5 seconds");
