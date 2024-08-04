@@ -119,6 +119,7 @@ void PublishCurrentMetrics(StatusLog status) {
   DynamicJsonDocument jLog(2048);
   jLog["command"] = CMD_UPDATE_METRICS;
   jLog["deviceGuid"] = status.deviceGuid;
+  jLog["espId"]  = status.espId;
   jLog["firmwareVersion"] = status.firmwareVersion;
   jLog["signalQuality"] = status.signalQuality;
 
@@ -175,10 +176,10 @@ void dataHandler(GfSun2000Data data) {
   //Process today grid consume:
   g_todayGridCounter += (data.limmiterPower / 3600000);
 
-  strDeviceId = String(data.deviceID);
   StatusLog status;
   status.command = CMD_UPDATE_METRICS;
   status.deviceGuid = data.deviceID;
+  status.espId = strDeviceId;
   status.firmwareVersion = FIRMWARE_VERSION;
   status.signalQuality = get_signal_quality();
   status.dataStreams.push_back(DataStream("dc_voltage", data.DCVoltage));
@@ -345,30 +346,17 @@ void mqtt_connect_to_server() {
   // Attempt to connect
   char topic_status[128];
   sprintf(topic_status, "%s/%s/%s/%s", topic_root, device_model, "status", strDeviceId);
-  sprintf(mqtt_client_name, "ESP8266Client_%04X", random(0xffff));
-
-
-  DynamicJsonDocument lastMessage(256);
-  lastMessage["command"] = CMD_UPDATE_STATUS;
-  lastMessage["deviceGuid"] = strDeviceId;
-  lastMessage["message"] = "disconnected";
-
-  String strLastMessage;
-  serializeJson(lastMessage, strLastMessage);
+  sprintf(mqtt_client_name, "ESP8266Client_%s", strDeviceId);
 
   while (!mqtt_client->connected()) {
-    if (mqtt_client->connect(mqtt_client_name, mqtt_user, mqtt_password,
-                             topic_status, 0, true, strLastMessage.c_str())) {
+    if (mqtt_client->connect(mqtt_client_name, mqtt_user, mqtt_password)) {
       SERIAL_LOG.println("Mqtt connected");
-      //Send a message to notice that i'm online
-      lastMessage["message"] = "connected";
-      serializeJson(lastMessage, strLastMessage);
-      mqtt_client->publish(topic_status, strLastMessage.c_str());
-      // ... and resubscribe
+      //Subscribe a control topic
       char topic_subscribe[128];
       sprintf(topic_subscribe, "%s/%s/control/%s", topic_root, device_model, strDeviceId);
       mqtt_client->subscribe(topic_subscribe);
-    } else {
+    } 
+    else {
       SERIAL_LOG.print("Mqtt connect failed, rc=");
       SERIAL_LOG.print(mqtt_client->state());
       SERIAL_LOG.println(" try again in 5 seconds");

@@ -19,6 +19,7 @@ struct DataStream{
 struct StatusLog{
   String command;
   String deviceGuid;
+  String espId;
   String firmwareVersion;
   int signalQuality;
   std::vector<DataStream> dataStreams;

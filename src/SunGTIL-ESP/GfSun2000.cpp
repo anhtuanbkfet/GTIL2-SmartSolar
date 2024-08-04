@@ -11,7 +11,7 @@ GfSun2000OnError onError;
 int8_t remoteNum = 1;
 bool done = true;
 
-GfSun2000_Work_Mode gtilWorkMode = DETAIL_MODE;
+GfSun2000_Work_Mode gtilWorkMode = BASIC_MODE;
 
 void handleError(Error error, uint32_t token) {
   // ModbusError wraps the error code and provides a readable error message for it
